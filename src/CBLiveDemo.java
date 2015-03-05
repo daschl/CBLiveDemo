@@ -1,10 +1,18 @@
+import com.couchbase.client.core.BackpressureException;
+import com.couchbase.client.core.lang.Tuple;
+import com.couchbase.client.core.lang.Tuple2;
+import com.couchbase.client.core.retry.FailFastRetryStrategy;
+import com.couchbase.client.core.time.Delay;
 import com.couchbase.client.deps.io.netty.buffer.ByteBuf;
 import com.couchbase.client.deps.io.netty.buffer.Unpooled;
 import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.couchbase.client.java.document.BinaryDocument;
+import com.couchbase.client.java.env.DefaultCouchbaseEnvironment;
+import rx.Observable;
 import rx.Observer;
-
+import rx.functions.Func1;
+import rx.functions.Func2;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
@@ -14,15 +22,13 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import java.util.concurrent.TimeUnit;
 
 public class CBLiveDemo {
 
     // Select PRIMARY datacentre
-    private static String HOST = "192.168.1.200:8091";
+    private static String HOST = "192.168.56.101";
     private static String BUCKET = "cblive";
     private static String PASS = "cblive";
 
@@ -32,8 +38,8 @@ public class CBLiveDemo {
 //    private static String PASS = "";
 
 
-    private static int MAX_SETS_SEC = 10000;
-    private static int MAX_GETS_SEC = 10000;
+    private static int MAX_SETS_SEC = 1000;
+    private static int MAX_GETS_SEC = 1000;
     private static boolean USE_ASYNC = true;
 
 
@@ -53,7 +59,7 @@ public class CBLiveDemo {
 
     public static class CBReader extends Thread {
 
-        class CompletionObserver implements Observer<BinaryDocument> {
+        public class CompletionObserver implements Observer<BinaryDocument> {
 
             private int base;
 
@@ -63,24 +69,23 @@ public class CBLiveDemo {
 
             @Override
             public void onCompleted() {
-
+                frameLatch.countDown();
             }
 
             @Override
             public void onError(Throwable throwable) {
-                // Error - show magenta.
+                throwable.printStackTrace();
                 mainWindow.window.pixelData[base] = 0xFF00FF;
-                System.err.println("Exception on get " + throwable.getMessage());
-                return;
             }
 
             @Override
             public void onNext(BinaryDocument binaryDocument) {
-                Object res;
-                ByteBuf buf = binaryDocument.content();
-                res = buf.getByte(0);
-                if (res != null) {
+                if (binaryDocument != null) {
+                    Object res;
+                    ByteBuf buf = binaryDocument.content();
+                    res = buf.getInt(0);
                     mainWindow.window.pixelData[base] = (Integer) res;
+                    buf.release();
                 } else {
                     // Null - show black.
                     // “Indigo with terra sienna, Prussian blue with burnt sienna, really give much deeper tones
@@ -169,16 +174,17 @@ public class CBLiveDemo {
 
                     if (USE_ASYNC) {
                         try {
-                            client.async().get("px_", CompletionObserver<BinaryDocument> BinaryDocument);
-
-
-                            GetFuture<Object> future = client.asyncGet("px_" + pixel);
-                            future.addListener(new MyListener(pixel));
+                            client
+                                .async()
+                                .get("px_" + pixel, BinaryDocument.class)
+                                .timeout(2, TimeUnit.SECONDS)
+                                .retryWhen(new BackpressureRetryHandler())
+                                .subscribe(new CompletionObserver(pixel));
                         } catch (IllegalStateException e) {
                             frameLatch.countDown(); //unable to request this pixel. Ignore it.
                         }
-                    } else // Synchronous
-//                    {
+                    } //else // Synchronous
+//                   {
 //                        try {
 //                            Object res = client.get("px_" + pixel);
 //                            mainWindow.window.pixelData[pixel] = (Integer) res;
@@ -210,10 +216,36 @@ public class CBLiveDemo {
         }
     }
 
+    public static class BackpressureRetryHandler implements  Func1<Observable<? extends Throwable>, Observable<?>> {
+
+        private final Delay delay = Delay.exponential(TimeUnit.MILLISECONDS, 500);
+
+        @Override
+        public Observable<?> call(Observable<? extends Throwable> notification) {
+            return notification
+                .zipWith(Observable.range(1, 10), new Func2<Throwable, Integer, Tuple2<Throwable, Integer>>() {
+                    @Override
+                    public Tuple2<Throwable, Integer> call(Throwable throwable, Integer attempts) {
+                        return Tuple.create(throwable, attempts);
+                    }
+                })
+                .flatMap(new Func1<Tuple2<Throwable, Integer>, Observable<?>>() {
+                    @Override
+                    public Observable<?> call(Tuple2<Throwable, Integer> attempt) {
+                        if (attempt.value2() == 8 || !(attempt.value1() instanceof BackpressureException)) {
+                            return Observable.error(attempt.value1());
+                        }
+                        return Observable.timer(delay.calculate(attempt.value2()), delay.unit());
+                    }
+                });
+        }
+
+    }
+
     public static class CBWriter extends Thread {
 
 
-        class WriteObserver implements Observer{
+        class WriteObserver implements Observer<BinaryDocument> {
 
             private int base;
 
@@ -228,13 +260,12 @@ public class CBLiveDemo {
 
             @Override
             public void onError(Throwable throwable) {
-                System.err.println("WRITE EXCEPTION!");
-                System.err.println(throwable.getMessage());
+                throwable.printStackTrace();
                 mainWindow.window.pixelData[base] = 0xFF00FF;
             }
 
             @Override
-            public void onNext(Object o) {
+            public void onNext(BinaryDocument o) {
                 // don't care
             }
         }
@@ -272,7 +303,12 @@ public class CBLiveDemo {
                     try {
                         ByteBuf binPixelValue = Unpooled.copyInt(pixelValue);
                         BinaryDocument content = BinaryDocument.create("px_" + pixel, binPixelValue);
-                        client.async().upsert(content).subscribe(new WriteObserver(1));
+                        client
+                            .async()
+                            .upsert(content)
+                            .timeout(2, TimeUnit.SECONDS)
+                            .retryWhen(new BackpressureRetryHandler())
+                            .subscribe(new WriteObserver(pixel));
 //                        client
 //                                .async()
 //                                .insert(content)
@@ -286,7 +322,7 @@ public class CBLiveDemo {
                     }
 
                     // 20 times a second we are going to rate-limit the number of ops to increase smoothness
-                    if ((i % (MAX_SETS_SEC / 20)) == 0) {
+                   if ((i % (MAX_SETS_SEC / 20)) == 0) {
                         currentTime = System.currentTimeMillis();
                         if (currentTime < (startTime + 50)) {
                             try {
@@ -424,49 +460,23 @@ public class CBLiveDemo {
 
         shufflePixelOrder();
 
-        // Tell things using spymemcached logging to use internal SunLogger API
-        Properties systemProperties = System.getProperties();
-        systemProperties.put("net.spy.log.LoggerImpl", "net.spy.memcached.compat.log.SunLogger");
-        System.setProperties(systemProperties);
-
-        Logger.getLogger("net.spy.memcached").setLevel(Level.WARNING);
-        Logger.getLogger("com.couchbase.client").setLevel(Level.WARNING);
-        Logger.getLogger("com.couchbase.client.vbucket").setLevel(Level.WARNING);
-
-        // Add one or more nodes of your cluster (exchange the IP with yours)
-        nodes.add(URI.create("http://" + HOST + "/pools"));
-
-        // Try to connect to the client
-        try {
-//            CouchbaseConnectionFactoryBuilder cfb = new CouchbaseConnectionFactoryBuilder();
-//            cfb.setOpTimeout(1000);  // wait up to 1 second for an operation to succeed
-//            cfb.setOpQueueMaxBlockTime(500); // wait up to 0.5 seconds when trying to enqueue an operation
-//            //cfb.setMaxReconnectDelay(500);
-//            //cfb.setTimeoutExceptionThreshold(10);
-//            cfb.setFailureMode(FailureMode.Cancel);
-//
-//            cfb.setUseNagleAlgorithm(true);
-//            client = new CouchbaseClient(cfb.buildCouchbaseConnection(nodes, BUCKET, PASS));
-
-        } catch (Exception e) {
-            System.err.println("Error connecting to Couchbase: " + e.getMessage());
-            System.exit(1);
-        }
-
-        (new CBWriter()).start();
-        (new CBReader()).start();
+        new CBWriter().start();
+        new CBReader().start();
 
         mainWindow.join();
 
         // Shutdown the client
-        client.close();
+        cluster.disconnect();
     }
 
     // Create a cluster reference
-    static CouchbaseCluster cluster = CouchbaseCluster.create(HOST);
+    static CouchbaseCluster cluster = CouchbaseCluster.create(DefaultCouchbaseEnvironment
+        .builder()
+        .retryStrategy(FailFastRetryStrategy.INSTANCE)
+        .build(), HOST);
 
     // Connect to the bucket and open it
-    static Bucket client = cluster.openBucket(BUCKET);
+    static Bucket client = cluster.openBucket(BUCKET, PASS);
 
     private static RenderZoomWindow zoomWindow;
     private static RenderMainWindow mainWindow;
