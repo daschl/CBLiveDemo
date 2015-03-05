@@ -1,11 +1,9 @@
-import com.couchbase.client.CouchbaseClient;
-import com.couchbase.client.CouchbaseConnectionFactoryBuilder;
-import net.spy.memcached.FailureMode;
-import net.spy.memcached.OperationTimeoutException;
-import net.spy.memcached.internal.GetCompletionListener;
-import net.spy.memcached.internal.GetFuture;
-import net.spy.memcached.internal.OperationCompletionListener;
-import net.spy.memcached.internal.OperationFuture;
+import com.couchbase.client.deps.io.netty.buffer.ByteBuf;
+import com.couchbase.client.deps.io.netty.buffer.Unpooled;
+import com.couchbase.client.java.Bucket;
+import com.couchbase.client.java.CouchbaseCluster;
+import com.couchbase.client.java.document.BinaryDocument;
+import rx.Observer;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -24,7 +22,7 @@ import java.util.logging.Logger;
 public class CBLiveDemo {
 
     // Select PRIMARY datacentre
-    private static String HOST = "localhost:9000";
+    private static String HOST = "192.168.1.200:8091";
     private static String BUCKET = "cblive";
     private static String PASS = "cblive";
 
@@ -55,49 +53,91 @@ public class CBLiveDemo {
 
     public static class CBReader extends Thread {
 
-
-        class MyListener implements GetCompletionListener {
+        class CompletionObserver implements Observer<BinaryDocument> {
 
             private int base;
 
-            MyListener(int i) {
+            CompletionObserver(int i) {
                 base = i;
             }
 
-            public void onComplete(GetFuture<?> future) {
-                if (future.getStatus().isSuccess()) {
-                    Object res;
-                    try {
-                        res = future.get();
-                    } catch (Exception e) {
-                        // Error - show magenta.
-                        mainWindow.window.pixelData[base] = 0xFF00FF;
-                        System.err.println("Exception on get " + e.getMessage());
-                        System.err.println("Status on future " + future.getStatus().getMessage());
-                        return;
-                    }
-                    if (res != null) {
-                        mainWindow.window.pixelData[base] = (Integer) res;
-                    } else {
-                        // Null - show black.
-                        // “Indigo with terra sienna, Prussian blue with burnt sienna, really give much deeper tones
-                        // than pure black itself. When I hear people say ‘there is no black in nature’, I sometimes
-                        // think, ‘There is no real black in colors either’. However, you must beware of falling into
-                        // the error of thinking that the colorists do not use black, for of course as soon as an
-                        // element of blue, red, or yellow is mixed with black, it becomes a gray, namely, a dark,
-                        // reddish, yellowish, or bluish gray.”
-                        // Vincent van Gogh (Letter to Theo van Gogh, June 1884)
-                        mainWindow.window.pixelData[base] = 0x000000;
-                        System.err.println("Empty for some reason " + future.getStatus().getMessage());
-                    }
+            @Override
+            public void onCompleted() {
+
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                // Error - show magenta.
+                mainWindow.window.pixelData[base] = 0xFF00FF;
+                System.err.println("Exception on get " + throwable.getMessage());
+                return;
+            }
+
+            @Override
+            public void onNext(BinaryDocument binaryDocument) {
+                Object res;
+                ByteBuf buf = binaryDocument.content();
+                res = buf.getByte(0);
+                if (res != null) {
+                    mainWindow.window.pixelData[base] = (Integer) res;
                 } else {
-                    // Unsuccessful - show cyan.
-                    mainWindow.window.pixelData[base] = 0x00FFFF;
-                    System.err.println("No result " + future.getStatus().getMessage());
+                    // Null - show black.
+                    // “Indigo with terra sienna, Prussian blue with burnt sienna, really give much deeper tones
+                    // than pure black itself. When I hear people say ‘there is no black in nature’, I sometimes
+                    // think, ‘There is no real black in colors either’. However, you must beware of falling into
+                    // the error of thinking that the colorists do not use black, for of course as soon as an
+                    // element of blue, red, or yellow is mixed with black, it becomes a gray, namely, a dark,
+                    // reddish, yellowish, or bluish gray.”
+                    // Vincent van Gogh (Letter to Theo van Gogh, June 1884)
+                    mainWindow.window.pixelData[base] = 0x000000;
+//                    System.err.println("Empty for some reason " + future.getStatus().getMessage());
                 }
-                frameLatch.countDown();
             }
         }
+
+//        class MyListener implements GetCompletionListener {
+//
+//            private int base;
+//
+//            MyListener(int i) {
+//                base = i;
+//            }
+//
+//            public void onComplete(GetFuture<?> future) {
+//                if (future.getStatus().isSuccess()) {
+//                    Object res;
+//                    try {
+//                        res = future.get();
+//                    } catch (Exception e) {
+//                        // Error - show magenta.
+//                        mainWindow.window.pixelData[base] = 0xFF00FF;
+//                        System.err.println("Exception on get " + e.getMessage());
+//                        System.err.println("Status on future " + future.getStatus().getMessage());
+//                        return;
+//                    }
+//                    if (res != null) {
+//                        mainWindow.window.pixelData[base] = (Integer) res;
+//                    } else {
+//                        // Null - show black.
+//                        // “Indigo with terra sienna, Prussian blue with burnt sienna, really give much deeper tones
+//                        // than pure black itself. When I hear people say ‘there is no black in nature’, I sometimes
+//                        // think, ‘There is no real black in colors either’. However, you must beware of falling into
+//                        // the error of thinking that the colorists do not use black, for of course as soon as an
+//                        // element of blue, red, or yellow is mixed with black, it becomes a gray, namely, a dark,
+//                        // reddish, yellowish, or bluish gray.”
+//                        // Vincent van Gogh (Letter to Theo van Gogh, June 1884)
+//                        mainWindow.window.pixelData[base] = 0x000000;
+//                        System.err.println("Empty for some reason " + future.getStatus().getMessage());
+//                    }
+//                } else {
+//                    // Unsuccessful - show cyan.
+//                    mainWindow.window.pixelData[base] = 0x00FFFF;
+//                    System.err.println("No result " + future.getStatus().getMessage());
+//                }
+//                frameLatch.countDown();
+//            }
+//        }
 
         public void run() {
 
@@ -129,21 +169,24 @@ public class CBLiveDemo {
 
                     if (USE_ASYNC) {
                         try {
+                            client.async().get("px_", CompletionObserver<BinaryDocument> BinaryDocument);
+
+
                             GetFuture<Object> future = client.asyncGet("px_" + pixel);
                             future.addListener(new MyListener(pixel));
                         } catch (IllegalStateException e) {
                             frameLatch.countDown(); //unable to request this pixel. Ignore it.
                         }
                     } else // Synchronous
-                    {
-                        try {
-                            Object res = client.get("px_" + pixel);
-                            mainWindow.window.pixelData[pixel] = (Integer) res;
-                        } catch (OperationTimeoutException e) {
-                            System.out.println("TIMEOUT on px_" + pixel);
-                            mainWindow.window.pixelData[pixel] = 0xFF00FF;
-                        }
-                    }
+//                    {
+//                        try {
+//                            Object res = client.get("px_" + pixel);
+//                            mainWindow.window.pixelData[pixel] = (Integer) res;
+//                        } catch (OperationTimeoutException e) {
+//                            System.out.println("TIMEOUT on px_" + pixel);
+//                            mainWindow.window.pixelData[pixel] = 0xFF00FF;
+//                        }
+//                    }
                     if ((i % (MAX_GETS_SEC / 20)) == 0) {
                         currentTime = System.currentTimeMillis();
                         if (currentTime < (startTime + 50)) {
@@ -169,24 +212,33 @@ public class CBLiveDemo {
 
     public static class CBWriter extends Thread {
 
-        class WriteListener implements OperationCompletionListener {
+
+        class WriteObserver implements Observer{
 
             private int base;
 
-            WriteListener(int i) {
+            WriteObserver(int i) {
                 base = i;
             }
 
-            public void onComplete(OperationFuture<?> future) {
-                try {
-                    future.get();
-                } catch (Exception e) {
-                    System.err.println("WRITE EXCEPTION!");
-                    System.err.println(e.getMessage());
-                    mainWindow.window.pixelData[base] = 0xFF00FF;
-                }
+            @Override
+            public void onCompleted() {
+                // don't care
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                System.err.println("WRITE EXCEPTION!");
+                System.err.println(throwable.getMessage());
+                mainWindow.window.pixelData[base] = 0xFF00FF;
+            }
+
+            @Override
+            public void onNext(Object o) {
+                // don't care
             }
         }
+
 
         public void run() {
 
@@ -218,8 +270,17 @@ public class CBLiveDemo {
                     pixelValue = (r << 16) | (g << 8) | (b << 0);
 
                     try {
-                        OperationFuture<Boolean> future = client.set("px_" + pixel, pixelValue);
-                        future.addListener(new WriteListener(pixel));
+                        ByteBuf binPixelValue = Unpooled.copyInt(pixelValue);
+                        BinaryDocument content = BinaryDocument.create("px_" + pixel, binPixelValue);
+                        client.async().upsert(content).subscribe(new WriteObserver(1));
+//                        client
+//                                .async()
+//                                .insert(content)
+//                                .flatMap(document -> client.async().get(document))
+//                                .map(doc -> doc.content().getString("hello"))
+//                                .subscribe(s -> System.out.println("Couchbase is the best database in the " + s));
+//
+//                        future.addListener(new WriteListener(pixel));
                     } catch (IllegalStateException e) {
                         // couldn't write this pixel. Ignore
                     }
@@ -377,15 +438,15 @@ public class CBLiveDemo {
 
         // Try to connect to the client
         try {
-            CouchbaseConnectionFactoryBuilder cfb = new CouchbaseConnectionFactoryBuilder();
-            cfb.setOpTimeout(1000);  // wait up to 1 second for an operation to succeed
-            cfb.setOpQueueMaxBlockTime(500); // wait up to 0.5 seconds when trying to enqueue an operation
-            //cfb.setMaxReconnectDelay(500);
-            //cfb.setTimeoutExceptionThreshold(10);
-            cfb.setFailureMode(FailureMode.Cancel);
-
-            cfb.setUseNagleAlgorithm(true);
-            client = new CouchbaseClient(cfb.buildCouchbaseConnection(nodes, BUCKET, PASS));
+//            CouchbaseConnectionFactoryBuilder cfb = new CouchbaseConnectionFactoryBuilder();
+//            cfb.setOpTimeout(1000);  // wait up to 1 second for an operation to succeed
+//            cfb.setOpQueueMaxBlockTime(500); // wait up to 0.5 seconds when trying to enqueue an operation
+//            //cfb.setMaxReconnectDelay(500);
+//            //cfb.setTimeoutExceptionThreshold(10);
+//            cfb.setFailureMode(FailureMode.Cancel);
+//
+//            cfb.setUseNagleAlgorithm(true);
+//            client = new CouchbaseClient(cfb.buildCouchbaseConnection(nodes, BUCKET, PASS));
 
         } catch (Exception e) {
             System.err.println("Error connecting to Couchbase: " + e.getMessage());
@@ -398,10 +459,15 @@ public class CBLiveDemo {
         mainWindow.join();
 
         // Shutdown the client
-        client.shutdown();
+        client.close();
     }
 
-    private static CouchbaseClient client;
+    // Create a cluster reference
+    static CouchbaseCluster cluster = CouchbaseCluster.create(HOST);
+
+    // Connect to the bucket and open it
+    static Bucket client = cluster.openBucket(BUCKET);
+
     private static RenderZoomWindow zoomWindow;
     private static RenderMainWindow mainWindow;
 }
